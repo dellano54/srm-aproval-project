@@ -31,8 +31,10 @@ export class ApprovalEngine {
     // SOP Verifier can return from SOP clarification to Institution Manager
     { from: RequestStatus.SOP_CLARIFICATION, to: RequestStatus.MANAGER_REVIEW, requiredRole: UserRole.SOP_VERIFIER },
 
-    // Accountant can return from Budget clarification to Institution Manager
-    { from: RequestStatus.BUDGET_CLARIFICATION, to: RequestStatus.MANAGER_REVIEW, requiredRole: UserRole.ACCOUNTANT },
+    // Accountant can return from Budget clarification based on budget availability
+    { from: RequestStatus.BUDGET_CLARIFICATION, to: RequestStatus.INSTITUTION_VERIFIED, requiredRole: UserRole.ACCOUNTANT, condition: (ctx) => ctx.budgetAvailable === true },
+    { from: RequestStatus.BUDGET_CLARIFICATION, to: RequestStatus.NO_BUDGET, requiredRole: UserRole.ACCOUNTANT, condition: (ctx) => ctx.budgetAvailable === false },
+    { from: RequestStatus.BUDGET_CLARIFICATION, to: RequestStatus.MANAGER_REVIEW, requiredRole: UserRole.ACCOUNTANT, condition: (ctx) => ctx.budgetAvailable === null },
 
     // Department users can return from Department clarification to Dean Review
     { from: RequestStatus.DEPARTMENT_CLARIFICATION, to: RequestStatus.DEAN_REVIEW, requiredRole: UserRole.MMA },
@@ -47,10 +49,10 @@ export class ApprovalEngine {
     { from: RequestStatus.SOP_VERIFICATION, to: RequestStatus.BUDGET_CHECK, requiredRole: UserRole.IT },
     { from: RequestStatus.SOP_VERIFICATION, to: RequestStatus.BUDGET_CHECK, requiredRole: UserRole.SOP_VERIFIER },
 
-    // Accountant Verify → Institution Verified (when budget is available)
-    { from: RequestStatus.BUDGET_CHECK, to: RequestStatus.INSTITUTION_VERIFIED, requiredRole: UserRole.ACCOUNTANT, condition: (ctx) => ctx.budgetAvailable === true },
+    // Accountant Verify → Institution Verified (when budget is available OR not applicable)
+    { from: RequestStatus.BUDGET_CHECK, to: RequestStatus.INSTITUTION_VERIFIED, requiredRole: UserRole.ACCOUNTANT, condition: (ctx) => ctx.budgetAvailable === true || ctx.budgetAvailable === null },
     
-    // Accountant Verify → NO_BUDGET (when budget is NOT available) - CRITICAL PATH
+    // Accountant Verify → NO_BUDGET (when budget is NOT available)
     { from: RequestStatus.BUDGET_CHECK, to: RequestStatus.NO_BUDGET, requiredRole: UserRole.ACCOUNTANT, condition: (ctx) => ctx.budgetAvailable === false },
 
     // Institution Verified → VP Approval (normal flow when budget available)
@@ -68,7 +70,7 @@ export class ApprovalEngine {
     // Dean Review → Department Checks (for detailed verification)
     { from: RequestStatus.DEAN_REVIEW, to: RequestStatus.DEPARTMENT_CHECKS, requiredRole: UserRole.DEAN },
     
-    // Dean Review → Chairman (expedited path - for NO_BUDGET cases) - UPDATED TO SKIP CHIEF DIRECTOR
+    // Dean Review → Chairman (expedited path - for NO_BUDGET cases)
     { from: RequestStatus.DEAN_REVIEW, to: RequestStatus.CHAIRMAN_APPROVAL, requiredRole: UserRole.DEAN, condition: (ctx) => ctx.isNoBudgetPath === true },
     
     // Dean Review → Dean Verification (normal flow)
@@ -112,12 +114,57 @@ export class ApprovalEngine {
         }
       }
       
-      // Default clarification for other roles (if any)
+      // Accountant responding to budget clarification
+      if (userRole === UserRole.ACCOUNTANT && currentStatus === RequestStatus.BUDGET_CLARIFICATION) {
+        if (context.budgetAvailable === false) {
+          return RequestStatus.NO_BUDGET;
+        } else if (context.budgetAvailable === true || context.budgetAvailable === null) {
+          return RequestStatus.INSTITUTION_VERIFIED;
+        }
+        return RequestStatus.MANAGER_REVIEW;
+      }
+      
+      // SOP Verifier responding to SOP clarification - return to Institution Manager
+      if (userRole === UserRole.SOP_VERIFIER && currentStatus === RequestStatus.SOP_CLARIFICATION) {
+        return RequestStatus.MANAGER_REVIEW;
+      }
+      
+      // Department users responding to department clarification
+      if ([UserRole.MMA, UserRole.HR, UserRole.AUDIT, UserRole.IT].includes(userRole) && 
+          currentStatus === RequestStatus.DEPARTMENT_CLARIFICATION) {
+        return RequestStatus.DEAN_REVIEW;
+      }
+      
       return RequestStatus.CLARIFICATION_REQUIRED;
     }
     
-    // For forward action, determine the next appropriate status
+    // For approve action
+    if (action === ActionType.APPROVE) {
+      // SOP Verifier can approve from SOP_VERIFICATION
+      // They provide SOP info but Institution Manager decides next step
+      if (currentStatus === RequestStatus.SOP_VERIFICATION && userRole === UserRole.SOP_VERIFIER) {
+        // Return to Manager Review so they can decide to forward or ask for budget clarification
+        return RequestStatus.MANAGER_REVIEW;
+      }
+      
+      // Accountant approval handling
+      if (userRole === UserRole.ACCOUNTANT && currentStatus === RequestStatus.BUDGET_CHECK) {
+        if (context.budgetAvailable === false) {
+          return RequestStatus.NO_BUDGET;
+        } else if (context.budgetAvailable === true || context.budgetAvailable === null) {
+          // Both "Yes" and "Not Applicable" lead to INSTITUTION_VERIFIED
+          return RequestStatus.INSTITUTION_VERIFIED;
+        }
+      }
+    }
+    
+    // For forward action
     if (action === ActionType.FORWARD) {
+      // Institution Manager can forward to VP from INSTITUTION_VERIFIED
+      if (currentStatus === RequestStatus.INSTITUTION_VERIFIED && userRole === UserRole.INSTITUTION_MANAGER) {
+        return RequestStatus.VP_APPROVAL;
+      }
+      
       // Institution Manager forwards from NO_BUDGET to Dean (expedited path)
       if (currentStatus === RequestStatus.NO_BUDGET && userRole === UserRole.INSTITUTION_MANAGER) {
         return RequestStatus.DEAN_REVIEW;
@@ -138,13 +185,11 @@ export class ApprovalEngine {
         return RequestStatus.DEAN_REVIEW;
       }
       
-      // Dean forwards - check if it's expedited NO_BUDGET path
+      // Dean forwards
       if (currentStatus === RequestStatus.DEAN_REVIEW && userRole === UserRole.DEAN) {
-        // If coming from NO_BUDGET path, go directly to Chairman (UPDATED - SKIP CHIEF DIRECTOR)
         if (context.isNoBudgetPath === true) {
           return RequestStatus.CHAIRMAN_APPROVAL;
         }
-        // Otherwise, go to Department Checks or Dean Verification
         return RequestStatus.DEPARTMENT_CHECKS;
       }
       
@@ -158,16 +203,14 @@ export class ApprovalEngine {
         return RequestStatus.CHAIRMAN_APPROVAL;
       }
       
-      // For other cases, status remains the same
       return currentStatus;
     }
 
-    // Find applicable rules based on current status and user role
+    // Find applicable rules
     const applicableRules = this.rules.filter(rule => 
       rule.from === currentStatus && rule.requiredRole === userRole
     );
 
-    // Evaluate conditions and return the first matching rule
     for (const rule of applicableRules) {
       if (!rule.condition || rule.condition(context)) {
         return rule.to;
@@ -195,7 +238,7 @@ export class ApprovalEngine {
       [RequestStatus.APPROVED]: [],
       [RequestStatus.REJECTED]: [],
       [RequestStatus.CLARIFICATION_REQUIRED]: [UserRole.REQUESTER],
-      [RequestStatus.SOP_CLARIFICATION]: [UserRole.SOP_VERIFIER, UserRole.MMA, UserRole.HR, UserRole.AUDIT, UserRole.IT],
+      [RequestStatus.SOP_CLARIFICATION]: [UserRole.SOP_VERIFIER],
       [RequestStatus.BUDGET_CLARIFICATION]: [UserRole.ACCOUNTANT],
       [RequestStatus.DEPARTMENT_CLARIFICATION]: [UserRole.MMA, UserRole.HR, UserRole.AUDIT, UserRole.IT],
     };
@@ -224,9 +267,7 @@ export class ApprovalEngine {
     return { step: Math.max(step, 1), total: statusOrder.length };
   }
   
-  // Helper method to check if request is on NO_BUDGET path
   isNoBudgetPath(request: any): boolean {
-    // Check if any history entry has status NO_BUDGET
     if (request.history && Array.isArray(request.history)) {
       return request.history.some((entry: any) => 
         entry.newStatus === RequestStatus.NO_BUDGET || 

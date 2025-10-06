@@ -331,9 +331,10 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
               </div>
             )}
             
-            {/* Action Buttons - Only show for appropriate approvers, NOT for requesters */}
+            {/* Action Buttons - Updated to include SOP Verifier */}
             {(() => {
-              const clarificationOnlyRoles = ['sop_verifier', 'accountant', 'mma', 'hr', 'audit', 'it'];
+              // Department users can only respond to clarification
+              const clarificationOnlyRoles = ['mma', 'hr', 'audit', 'it'];
               const isClarificationOnlyUser = clarificationOnlyRoles.includes(currentUser?.role || '');
               const isClarificationStatus = request.status === 'sop_clarification' || 
                                            request.status === 'budget_clarification' || 
@@ -341,9 +342,15 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
               
               const isRequester = currentUser?.role === 'requester';
               
+              // SOP Verifier can act in regular flow OR when responding to clarification
+              const isSopVerifier = currentUser?.role === 'sop_verifier';
+              const canSopVerifierAct = isSopVerifier && 
+                (request.status === 'sop_verification' || request.status === 'sop_clarification');
+              
               const shouldShowButton = !isRequester && 
-                                      (!isClarificationOnlyUser || 
-                                       (isClarificationOnlyUser && isClarificationStatus));
+                                      (canSopVerifierAct ||
+                                       (!isClarificationOnlyUser || 
+                                        (isClarificationOnlyUser && isClarificationStatus)));
               
               return shouldShowButton ? (
                 <div className="mt-8 pt-6 border-t border-gray-200">
@@ -351,7 +358,9 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
                     onClick={() => setIsApprovalModalOpen(true)}
                     className="px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 w-full sm:w-auto"
                   >
-                    {isClarificationOnlyUser && isClarificationStatus ? 'Respond to Clarification' : 'Process Request'}
+                    {(isClarificationOnlyUser || (isSopVerifier && request.status === 'sop_clarification')) && isClarificationStatus 
+                      ? 'Respond to Clarification' 
+                      : 'Process Request'}
                   </button>
                 </div>
               ) : null;
@@ -395,6 +404,7 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
         onApprove={handleApprove}
         currentStatus={request.status}
         userRole={currentUser?.role}
+        requestHistory={request.history}
       />
     </div>
   );

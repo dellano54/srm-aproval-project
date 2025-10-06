@@ -35,7 +35,7 @@ export enum RequestStatus {
   SOP_CLARIFICATION = 'sop_clarification',
   BUDGET_CLARIFICATION = 'budget_clarification',
   NO_BUDGET = 'no_budget',
-  DEPARTMENT_CLARIFICATION = 'department_clarification', // For Dean's clarifications to MMA, HR, Audit, IT
+  DEPARTMENT_CLARIFICATION = 'department_clarification',
 }
 
 export enum ActionType {
@@ -94,7 +94,7 @@ export interface ApprovalHistory {
   attachments?: string[];
   previousStatus?: RequestStatus;
   newStatus?: RequestStatus;
-  target?: 'sop' | 'budget'; // For clarification: which step to clarify
+  target?: 'sop' | 'budget' | 'department';
   timestamp: Date;
 }
 

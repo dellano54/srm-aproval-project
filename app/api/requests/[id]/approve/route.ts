@@ -18,7 +18,7 @@ export async function POST(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { action, notes, budgetAvailable, forwardedMessage, attachments, target } = await request.json();
+    const { action, notes, budgetAvailable, sopAvailable, forwardedMessage, attachments, target, forwardToSOP, forwardToBudget, forwardToVP } = await request.json();
     
     // Validate action
     if (!['approve', 'reject', 'clarify', 'forward'].includes(action)) {
@@ -54,17 +54,26 @@ export async function POST(
             (requestRecord.status === RequestStatus.BUDGET_CHECK || 
              requestRecord.status === RequestStatus.BUDGET_CLARIFICATION)) {
           if (budgetAvailable === false) {
-            // CRITICAL FIX: Directly set to NO_BUDGET
+            // Budget not available - go to NO_BUDGET
             nextStatus = RequestStatus.NO_BUDGET;
-          } else if (budgetAvailable === true) {
-            // Normal flow - budget available
+          } else if (budgetAvailable === true || budgetAvailable === null) {
+            // Budget available OR Not Applicable - both go to INSTITUTION_VERIFIED
             nextStatus = RequestStatus.INSTITUTION_VERIFIED;
           } else {
             return NextResponse.json({ 
               error: 'Budget availability must be specified by Accountant' 
             }, { status: 400 });
           }
-        } else {
+        } 
+        // SOP Verifier handling - record SOP availability and return to MANAGER_REVIEW
+        else if (user.role === UserRole.SOP_VERIFIER && 
+                 (requestRecord.status === RequestStatus.SOP_VERIFICATION || 
+                  requestRecord.status === RequestStatus.SOP_CLARIFICATION)) {
+          // SOP availability (Yes/No/N/A) is recorded in history
+          // Return to MANAGER_REVIEW so Institution Manager can decide next step
+          nextStatus = RequestStatus.MANAGER_REVIEW;
+        } 
+        else {
           // Get next status based on approval rules for all other cases
           nextStatus = approvalEngine.getNextStatus(
             requestRecord.status, 
@@ -117,9 +126,9 @@ export async function POST(
           // Accountant responding to clarification - handle budget availability
           if (budgetAvailable === false) {
             nextStatus = RequestStatus.NO_BUDGET;
-          } else if (budgetAvailable === true) {
-            // Return to Institution Manager if budget is available
-            nextStatus = RequestStatus.MANAGER_REVIEW;
+          } else if (budgetAvailable === true || budgetAvailable === null) {
+            // Budget is available OR Not Applicable - go to INSTITUTION_VERIFIED
+            nextStatus = RequestStatus.INSTITUTION_VERIFIED;
           } else {
             return NextResponse.json({ 
               error: 'Budget availability must be specified by Accountant' 
@@ -132,20 +141,34 @@ export async function POST(
         break;
         
       case 'forward':
-        // Use approval engine to determine next status for forward action
-        nextStatus = approvalEngine.getNextStatus(
-          requestRecord.status,
-          ActionType.FORWARD,
-          user.role as UserRole,
-          { isNoBudgetPath }
-        ) || requestRecord.status;
+        // Institution Manager forwarding from MANAGER_REVIEW
+        if (user.role === UserRole.INSTITUTION_MANAGER && requestRecord.status === RequestStatus.MANAGER_REVIEW) {
+          if (forwardToVP) {
+            // Go directly to VP after verifications are done
+            nextStatus = RequestStatus.VP_APPROVAL;
+          } else if (forwardToSOP) {
+            nextStatus = RequestStatus.SOP_VERIFICATION;
+          } else if (forwardToBudget) {
+            nextStatus = RequestStatus.BUDGET_CHECK;
+          } else {
+            nextStatus = requestRecord.status;
+          }
+        } else {
+          // Use approval engine to determine next status for other forward actions
+          nextStatus = approvalEngine.getNextStatus(
+            requestRecord.status,
+            ActionType.FORWARD,
+            user.role as UserRole,
+            { isNoBudgetPath }
+          ) || requestRecord.status;
+        }
         actionType = ActionType.FORWARD;
         break;
     }
 
     console.log("Previous status:", previousStatus);
     console.log("Next status:", nextStatus);
-    console.log("Budget available:", budgetAvailable);
+    console.log("Budget/SOP available:", budgetAvailable);
 
     // Prepare history entry
     const historyEntry: any = {
@@ -167,8 +190,13 @@ export async function POST(
       if (notes) {
         historyEntry.notes = notes;
       }
+      // Record SOP/Budget availability for both Accountant and SOP Verifier
+      // Store null explicitly to indicate "Not Applicable" was selected
       if (budgetAvailable !== undefined) {
         historyEntry.budgetAvailable = budgetAvailable;
+      }
+      if (sopAvailable !== undefined) {
+        historyEntry.sopAvailable = sopAvailable;
       }
     }
 

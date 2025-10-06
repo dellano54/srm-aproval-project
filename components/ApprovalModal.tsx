@@ -15,13 +15,17 @@ interface ApprovalModalProps {
   onApprove: (data: {
     action: string;
     notes?: string;
-    budgetAvailable?: boolean;
+    budgetAvailable?: boolean | null;
     forwardedMessage?: string;
     attachments?: string[];
     target?: 'sop' | 'accountant' | 'mma' | 'hr' | 'audit' | 'it';
+    forwardToSOP?: boolean;
+    forwardToBudget?: boolean;
+    forwardToVP?: boolean;
   }) => Promise<void>;
   currentStatus: string;
   userRole?: string;
+  requestHistory?: any[];
 }
 
 export default function ApprovalModal({ 
@@ -30,7 +34,8 @@ export default function ApprovalModal({
   onClose, 
   onApprove,
   currentStatus,
-  userRole
+  userRole,
+  requestHistory = []
 }: ApprovalModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [action, setAction] = useState('approve');
@@ -43,22 +48,44 @@ export default function ApprovalModal({
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [clarifyTarget, setClarifyTarget] = useState<'sop' | 'accountant' | 'mma' | 'hr' | 'audit' | 'it' | ''>('');
+  const [forwardTarget, setForwardTarget] = useState<'sop' | 'budget' | 'vp'>('sop');
 
-  const clarificationOnlyRoles = ['sop_verifier', 'accountant', 'mma', 'hr', 'audit', 'it'];
+  const clarificationOnlyRoles = ['mma', 'hr', 'audit', 'it'];
   const isClarificationOnlyUser = clarificationOnlyRoles.includes(userRole || '');
   const isInstitutionManager = userRole === 'institution_manager';
   const forwardOnlyRoles = ['vp', 'head_of_institution', 'chief_director'];
   const isForwardOnlyUser = forwardOnlyRoles.includes(userRole || '');
   const isChairman = userRole === 'chairman';
   const isDean = userRole === 'dean';
+  const isSopVerifier = userRole === 'sop_verifier';
+  const isAccountant = userRole === 'accountant';
   const isClarificationStatus = currentStatus === 'sop_clarification' || 
                                currentStatus === 'budget_clarification' || 
                                currentStatus === 'department_clarification';
   const canRequestClarification = userRole === 'institution_manager' || userRole === 'dean';
   
-  // Institution Manager can forward if status is 'no_budget' or 'institution_verified'
   const canInstitutionManagerForward = isInstitutionManager && 
-    (currentStatus === 'institution_verified' || currentStatus === 'no_budget');
+    (currentStatus === 'institution_verified' || 
+     currentStatus === 'no_budget' ||
+     currentStatus === 'manager_review');
+  
+  // Check if at least one verification (SOP or Budget) has been done
+    const hasVerificationHistory = (history: any[]) => {
+      return history.some((entry: any) => 
+        entry.newStatus === 'sop_verification' || 
+        entry.previousStatus === 'sop_verification' ||
+        entry.newStatus === 'budget_check' ||
+        entry.previousStatus === 'budget_check' ||
+        entry.newStatus === 'sop_clarification' ||
+        entry.previousStatus === 'sop_clarification' ||
+        entry.newStatus === 'budget_clarification' ||
+        entry.previousStatus === 'budget_clarification' ||
+        (entry.actor?.role === 'sop_verifier' && entry.action === 'approve') ||
+        (entry.actor?.role === 'accountant' && entry.action === 'approve') ||
+        entry.sopAvailable !== undefined ||
+        entry.budgetAvailable !== undefined
+      );
+    };
 
   useEffect(() => {
     if (isClarificationOnlyUser && isClarificationStatus) {
@@ -77,7 +104,6 @@ export default function ApprovalModal({
         setClarifyTarget('');
       }
     } else if (isInstitutionManager) {
-      // Institution Manager: can forward from NO_BUDGET or INSTITUTION_VERIFIED, otherwise reject/clarify only
       if (canInstitutionManagerForward) {
         if (!['forward', 'reject', 'clarify'].includes(action)) {
           setAction('forward');
@@ -108,10 +134,13 @@ export default function ApprovalModal({
       await onApprove({
         action,
         notes: action !== 'forward' ? notes : undefined,
-        budgetAvailable: budgetAvailable !== null ? budgetAvailable : undefined,
+        budgetAvailable: budgetAvailable,
         forwardedMessage: action === 'forward' ? forwardedMessage : undefined,
         attachments: [...attachments, ...uploadedFiles.map(file => file.url)],
         target: action === 'clarify' && clarifyTarget ? clarifyTarget : undefined,
+        forwardToSOP: action === 'forward' && forwardTarget === 'sop',
+        forwardToBudget: action === 'forward' && forwardTarget === 'budget',
+        forwardToVP: action === 'forward' && forwardTarget === 'vp',
       });
       setAction('approve');
       setNotes('');
@@ -120,6 +149,7 @@ export default function ApprovalModal({
       setAttachments([]);
       setUploadedFiles([]);
       setClarifyTarget('');
+      setForwardTarget('sop');
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to process action');
@@ -240,6 +270,8 @@ export default function ApprovalModal({
                   <option value="clarify">Request Clarification</option>
                   <option value="forward">Forward</option>
                 </>
+              ) : isSopVerifier && currentStatus === 'sop_clarification' ? (
+                <option value="clarify">Submit Clarification Response</option>
               ) : (
                 <>
                   <option value="approve">Approve</option>
@@ -283,25 +315,73 @@ export default function ApprovalModal({
             </div>
           )}
 
-          {action === 'clarify' && isClarificationOnlyUser && isClarificationStatus && (
+          {action === 'clarify' && (isClarificationOnlyUser || (isSopVerifier && currentStatus === 'sop_clarification')) && isClarificationStatus && (
             <div className="text-xs sm:text-sm text-blue-600 bg-blue-50 p-3 rounded-md break-words">
               You are responding to a clarification request. Please provide the requested information in the notes section below.
             </div>
           )}
 
           {action === 'forward' ? (
-            <div>
-              <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
-                Forward Message
-              </label>
-              <textarea
-                value={forwardedMessage}
-                onChange={(e) => setForwardedMessage(e.target.value)}
-                rows={3}
-                className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-xs sm:text-sm p-2 border resize-none"
-                placeholder="Enter message for forwarding..."
-              />
-            </div>
+            <>
+              {/* Forward Target Selection for Institution Manager at MANAGER_REVIEW */}
+              {isInstitutionManager && currentStatus === 'manager_review' && (
+                <div className="mb-4">
+                  <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">
+                    Forward To
+                  </label>
+                  <div className="flex flex-col gap-2">
+                    {/* Only show VP option if at least one verification has been done */}
+                    {hasVerificationHistory(requestHistory) && (
+                      <label className="inline-flex items-center">
+                        <input
+                          type="radio"
+                          checked={forwardTarget === 'vp'}
+                          onChange={() => setForwardTarget('vp')}
+                          className="text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="ml-2 text-xs sm:text-sm">VP Approval (After Verification)</span>
+                      </label>
+                    )}
+                    <label className="inline-flex items-center">
+                      <input
+                        type="radio"
+                        checked={forwardTarget === 'sop'}
+                        onChange={() => setForwardTarget('sop')}
+                        className="text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="ml-2 text-xs sm:text-sm">SOP Verification</span>
+                    </label>
+                    <label className="inline-flex items-center">
+                      <input
+                        type="radio"
+                        checked={forwardTarget === 'budget'}
+                        onChange={() => setForwardTarget('budget')}
+                        className="text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="ml-2 text-xs sm:text-sm">Budget Check</span>
+                    </label>
+                  </div>
+                  {!hasVerificationHistory(requestHistory) && (
+                    <p className="text-xs text-amber-600 mt-2">
+                      ⚠️ VP Approval requires at least one verification (SOP or Budget) to be completed first.
+                    </p>
+                  )}
+                </div>
+              )}
+              
+              <div>
+                <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
+                  Forward Message
+                </label>
+                <textarea
+                  value={forwardedMessage}
+                  onChange={(e) => setForwardedMessage(e.target.value)}
+                  rows={3}
+                  className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-xs sm:text-sm p-2 border resize-none"
+                  placeholder="Enter message for forwarding..."
+                />
+              </div>
+            </>
           ) : (
             <div>
               <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
@@ -317,8 +397,9 @@ export default function ApprovalModal({
             </div>
           )}
           
-          {(action === 'approve' || action === 'budget_check' || 
-            (userRole === 'accountant' && currentStatus === 'budget_clarification' && action === 'clarify')) && (
+          {/* Budget Available - Only for Accountant */}
+          {(isAccountant && (action === 'approve' || 
+            (currentStatus === 'budget_clarification' && action === 'clarify'))) && (
             <div>
               <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">
                 Budget Available
@@ -341,6 +422,45 @@ export default function ApprovalModal({
                     className="text-blue-600 focus:ring-blue-500"
                   />
                   <span className="ml-2 text-xs sm:text-sm">No</span>
+                </label>
+                <label className="inline-flex items-center">
+                  <input
+                    type="radio"
+                    checked={budgetAvailable === null}
+                    onChange={() => setBudgetAvailable(null)}
+                    className="text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="ml-2 text-xs sm:text-sm">Not Applicable</span>
+                </label>
+              </div>
+            </div>
+          )}
+          
+          {/* SOP Available - Only for SOP Verifier */}
+          {(isSopVerifier && (action === 'approve' || 
+            (currentStatus === 'sop_clarification' && action === 'clarify'))) && (
+            <div>
+              <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">
+                SOP Material Available
+              </label>
+              <div className="flex flex-col sm:flex-row gap-2 sm:gap-4">
+                <label className="inline-flex items-center">
+                  <input
+                    type="radio"
+                    checked={budgetAvailable === true}
+                    onChange={() => setBudgetAvailable(true)}
+                    className="text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="ml-2 text-xs sm:text-sm">Available</span>
+                </label>
+                <label className="inline-flex items-center">
+                  <input
+                    type="radio"
+                    checked={budgetAvailable === false}
+                    onChange={() => setBudgetAvailable(false)}
+                    className="text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="ml-2 text-xs sm:text-sm">Not Available</span>
                 </label>
                 <label className="inline-flex items-center">
                   <input
